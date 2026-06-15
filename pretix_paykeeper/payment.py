@@ -1,0 +1,408 @@
+import base64
+import json
+import logging
+from collections import OrderedDict
+from datetime import timedelta
+from decimal import Decimal
+from urllib.parse import urljoin
+
+import requests as http_requests
+from django import forms
+from django.utils.timezone import now
+from django.utils.translation import gettext_lazy as _
+from pretix.base.models import OrderPayment
+from pretix.base.payment import BasePaymentProvider, PaymentException
+from pretix.multidomain.urlreverse import build_absolute_uri
+
+logger = logging.getLogger('pretix_paykeeper')
+
+TAX_MAP = {
+    None: 'none',
+    '0': 'vat0',
+    '5': 'vat5',
+    '7': 'vat7',
+    '10': 'vat10',
+    '20': 'vat20',
+    '18': 'vat18',
+    '18_118': 'vat18_118',
+    '10_110': 'vat10_110',
+}
+
+
+class PaykeeperSettingsForm(forms.Form):
+    server_url = forms.URLField(
+        label=_('Paykeeper Server URL'),
+        help_text=_('Full URL of your Paykeeper server, e.g.') + ' https://example.server.paykeeper.ru',
+        required=True,
+    )
+    api_user = forms.CharField(
+        label=_('Username'),
+        help_text=_('Username from your Paykeeper cabinet'),
+        required=True,
+    )
+    api_password = forms.CharField(
+        label=_('Password'),
+        help_text=_('Password from your Paykeeper cabinet'),
+        required=True,
+        widget=forms.PasswordInput(render_value=True),
+    )
+    invoice_expiry_days = forms.IntegerField(
+        label=_('Invoice Expiry (days)'),
+        help_text=_('How many days the invoice stays valid'),
+        required=False,
+        initial=7,
+        min_value=1,
+        max_value=30,
+    )
+    service_name = forms.CharField(
+        label=_('Service Name'),
+        help_text=_('Displayed as the service name on Paykeeper invoices'),
+        required=False,
+        initial=_('Event tickets'),
+        max_length=255,
+    )
+    send_receipt = forms.BooleanField(
+        label=_('Send 54-FZ receipt'),
+        help_text=_('Send fiscal receipt data to the tax service'),
+        required=False,
+        initial=False,
+    )
+
+
+class PaykeeperPaymentProvider(BasePaymentProvider):
+    identifier = 'paykeeper'
+    verbose_name = 'Paykeeper'
+
+    @property
+    def settings_form_fields(self):
+        return OrderedDict([
+            ('_enabled', forms.BooleanField(
+                label=_('Enable Paykeeper'),
+                required=False,
+            )),
+            ('server_url', PaykeeperSettingsForm.base_fields['server_url']),
+            ('api_user', PaykeeperSettingsForm.base_fields['api_user']),
+            ('api_password', PaykeeperSettingsForm.base_fields['api_password']),
+            ('invoice_expiry_days', PaykeeperSettingsForm.base_fields['invoice_expiry_days']),
+            ('service_name', PaykeeperSettingsForm.base_fields['service_name']),
+            ('send_receipt', PaykeeperSettingsForm.base_fields['send_receipt']),
+        ])
+
+    @property
+    def test_mode_message(self):
+        return None
+
+    def _get_base_url(self):
+        url = self.settings.get('server_url')
+        return url.rstrip('/') if url else ''
+
+    def _get_auth(self):
+        user = self.settings.get('api_user') or ''
+        password = self.settings.get('api_password') or ''
+        return user, password
+
+    def _get_expiry_days(self):
+        return int(self.settings.get('invoice_expiry_days') or 7)
+
+    def _get_service_name(self):
+        return self.settings.get('service_name') or _('Event tickets')
+
+    def _get_basic_auth_header(self):
+        user, password = self._get_auth()
+        encoded = base64.b64encode(f'{user}:{password}'.encode()).decode()
+        return {'Authorization': f'Basic {encoded}'}
+
+    def _get_token(self):
+        url = urljoin(self._get_base_url() + '/', '/info/settings/token/')
+        headers = self._get_basic_auth_header()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+        try:
+            resp = http_requests.get(url, headers=headers, timeout=30, verify=True)
+            resp.raise_for_status()
+            data = resp.json()
+            token = data.get('token')
+            if not token:
+                raise PaymentException(_('Could not obtain security token from Paykeeper.'))
+            return token
+        except http_requests.exceptions.ConnectionError:
+            logger.error('Paykeeper: connection error for token endpoint %s', url)
+            raise PaymentException(_('Could not connect to Paykeeper server.'))
+        except http_requests.exceptions.HTTPError as e:
+            logger.error('Paykeeper: token error %s', e.response.status_code)
+            raise PaymentException(_('Paykeeper authentication failed. Check username and password.'))
+        except (ValueError, KeyError):
+            raise PaymentException(_('Invalid response from Paykeeper server.'))
+
+    def _api_post(self, endpoint, data):
+        url = urljoin(self._get_base_url() + '/', endpoint.lstrip('/'))
+        headers = self._get_basic_auth_header()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+        try:
+            resp = http_requests.post(url, data=data, headers=headers, timeout=30, verify=True)
+            resp.raise_for_status()
+            return resp.json()
+        except http_requests.exceptions.ConnectionError:
+            raise PaymentException(_('Could not connect to Paykeeper server.'))
+        except http_requests.exceptions.Timeout:
+            raise PaymentException(_('Paykeeper server timed out.'))
+        except http_requests.exceptions.HTTPError as e:
+            logger.error('Paykeeper: HTTP error %s for %s', e.response.status_code, url)
+            raise PaymentException(
+                _('Paykeeper returned an error (HTTP {code}).').format(code=e.response.status_code)
+            )
+        except ValueError:
+            raise PaymentException(_('Invalid response from Paykeeper server.'))
+
+    def _api_get(self, endpoint, params=None):
+        url = urljoin(self._get_base_url() + '/', endpoint.lstrip('/'))
+        headers = self._get_basic_auth_header()
+
+        try:
+            resp = http_requests.get(url, params=params, headers=headers, timeout=30, verify=True)
+            resp.raise_for_status()
+            return resp.json()
+        except http_requests.exceptions.ConnectionError:
+            raise PaymentException(_('Could not connect to Paykeeper server.'))
+        except http_requests.exceptions.HTTPError as e:
+            logger.error('Paykeeper: HTTP error %s for %s', e.response.status_code, url)
+            raise PaymentException(
+                _('Paykeeper returned an error (HTTP {code}).').format(code=e.response.status_code)
+            )
+        except ValueError:
+            raise PaymentException(_('Invalid response from Paykeeper server.'))
+
+    def _get_tax_rate(self, position):
+        if not hasattr(position, 'tax_rate') or position.tax_rate is None:
+            return None
+        rate = position.tax_rate
+        if rate == Decimal('0'):
+            return '0'
+        if rate == Decimal('5'):
+            return '5'
+        if rate == Decimal('7'):
+            return '7'
+        if rate == Decimal('10'):
+            return '10'
+        if rate == Decimal('18'):
+            return '18'
+        if rate == Decimal('20'):
+            return '20'
+        return None
+
+    def _build_cart(self, order, payment):
+        if not self.settings.get('send_receipt', as_type=bool):
+            return None
+
+        cart_items = []
+        for pos in order.positions.all():
+            item_name = str(pos.item.name)
+            if pos.variation:
+                item_name = f'{item_name} ({pos.variation})'
+            unit_price = float(pos.price)
+            total = float(pos.price)
+            tax_rate = self._get_tax_rate(pos)
+            paykeeper_tax = TAX_MAP.get(tax_rate, 'none')
+
+            cart_items.append({
+                'name': item_name,
+                'price': '{:.2f}'.format(unit_price),
+                'quantity': 1,
+                'sum': '{:.2f}'.format(total),
+                'tax': paykeeper_tax,
+            })
+
+        if not cart_items:
+            total_amount = float(payment.amount)
+            cart_items.append({
+                'name': self._get_service_name(),
+                'price': '{:.2f}'.format(total_amount),
+                'quantity': 1,
+                'sum': '{:.2f}'.format(total_amount),
+                'tax': 'none',
+            })
+
+        return json.dumps(cart_items, ensure_ascii=False)
+
+    def _create_invoice(self, order, payment):
+        token = self._get_token()
+        expiry_date = (now() + timedelta(days=self._get_expiry_days())).strftime('%Y-%m-%d')
+        order_id = '{}-{}-{}'.format(order.event.slug, order.code, payment.pk)
+
+        callback_url = build_absolute_uri(
+            order.event, 'plugins:pretix_paykeeper:callback',
+            kwargs={'order': order.code, 'secret': order.secret}
+        )
+
+        service_name_value = self._get_service_name()
+        cart = self._build_cart(order, payment)
+        if cart:
+            service_data = {
+                'cart': cart,
+                'service_name': service_name_value,
+                'user_result_callback': callback_url,
+            }
+            service_name_value = json.dumps(service_data, ensure_ascii=False)
+
+        data = {
+            'pay_amount': '{:.2f}'.format(payment.amount),
+            'clientid': order.email or '',
+            'orderid': order_id,
+            'service_name': service_name_value,
+            'client_email': order.email or '',
+            'client_phone': '',
+            'expiry': expiry_date,
+            'token': token,
+            'user_result_callback': callback_url,
+        }
+
+        result = self._api_post('/change/invoice/preview/', data=data)
+        return result
+
+    def _check_invoice_status(self, invoice_id):
+        return self._api_get('/info/invoice/byid/', params={'id': invoice_id})
+
+    def _revoke_invoice(self, invoice_id):
+        token = self._get_token()
+        data = {'id': invoice_id, 'token': token}
+        return self._api_post('/change/invoice/revoke/', data=data)
+
+    def payment_form_fields(self):
+        return OrderedDict()
+
+    def payment_form_render(self, request, total, order=None):
+        return ''
+
+    def payment_is_valid_session(self, request):
+        return True
+
+    def checkout_prepare(self, request, cart):
+        request.session['payment_paykeeper_initialized'] = True
+        return True
+
+    def checkout_confirm_render(self, request, order=None, info_data=None):
+        return ''
+
+    def execute_payment(self, request, payment):
+        try:
+            invoice_data = self._create_invoice(payment.order, payment)
+        except PaymentException:
+            raise
+        except Exception as e:
+            logger.error('Paykeeper: failed to create invoice for %s: %s', payment.order.code, str(e))
+            raise PaymentException(_('Could not create Paykeeper invoice.'))
+
+        invoice_id = invoice_data.get('invoice_id')
+        invoice_url = invoice_data.get('invoice_url')
+
+        if not invoice_id or not invoice_url:
+            raise PaymentException(_('Paykeeper returned an incomplete response.'))
+
+        payment.info = json.dumps({
+            'invoice_id': invoice_id,
+            'invoice_url': invoice_url,
+        })
+        payment.save(update_fields=['info'])
+
+        return invoice_url
+
+    def payment_prepare(self, request, payment):
+        if payment.info:
+            try:
+                info = json.loads(payment.info)
+                if info.get('invoice_url') and info.get('invoice_id'):
+                    return True
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        try:
+            invoice_data = self._create_invoice(payment.order, payment)
+        except Exception as e:
+            logger.error('Paykeeper: failed to re-create invoice for %s: %s', payment.order.code, str(e))
+            return False
+
+        invoice_id = invoice_data.get('invoice_id')
+        invoice_url = invoice_data.get('invoice_url')
+
+        if not invoice_id or not invoice_url:
+            return False
+
+        payment.info = json.dumps({
+            'invoice_id': invoice_id,
+            'invoice_url': invoice_url,
+        })
+        payment.save(update_fields=['info'])
+
+        return True
+
+    def payment_control_render(self, request, payment):
+        invoice_id = None
+        invoice_url = None
+        if payment.info:
+            try:
+                info = json.loads(payment.info)
+                invoice_id = info.get('invoice_id')
+                invoice_url = info.get('invoice_url')
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        return (
+            '<dl>'
+            '<dt>{label_id}</dt><dd>{val_id}</dd>'
+            '<dt>{label_url}</dt><dd><a href="{val_url}" target="_blank">{val_url}</a></dd>'
+            '</dl>'
+        ).format(
+            label_id=_('Invoice ID'),
+            val_id=invoice_id or _('N/A'),
+            label_url=_('Invoice URL'),
+            val_url=invoice_url or _('N/A'),
+        )
+
+    def payment_control_render_short(self, order, payment):
+        return _('Paykeeper invoice')
+
+    def order_pending_mail_render(self, order, **kwargs):
+        return _('Please complete your payment via Paykeeper.')
+
+    def payment_pending_render(self, request, payment, **kwargs):
+        return ''
+
+    def payment_presale_render(self, payment):
+        return 'Paykeeper'
+
+    def payment_refund_supported(self, payment):
+        return False
+
+    def payment_partial_refund_supported(self, payment):
+        return False
+
+    def calculate_fee(self, price):
+        return Decimal('0.00')
+
+    def api_payment_details(self, order, payment):
+        info = {}
+        if payment.info:
+            try:
+                info = json.loads(payment.info)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+        return {
+            'invoice_id': info.get('invoice_id'),
+            'invoice_url': info.get('invoice_url'),
+        }
+
+    def shred_payment_info(self, obj):
+        if obj.info:
+            obj.info = '{}'
+            obj.save(update_fields=['info'])
+
+    def cancel_payment(self, payment):
+        if payment.info:
+            try:
+                info = json.loads(payment.info)
+                invoice_id = info.get('invoice_id')
+                if invoice_id:
+                    self._revoke_invoice(invoice_id)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass

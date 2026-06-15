@@ -1,0 +1,3 @@
+[plugin]
+package = "pretix-paykeeper"
+modules = ["pretix_paykeeper"]

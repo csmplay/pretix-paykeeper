@@ -1,0 +1,33 @@
+[project]
+name = "pretix-paykeeper"
+dynamic = ["version"]
+description = "Paykeeper payment provider plugin for pretix"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+keywords = ["pretix", "paykeeper", "payment"]
+authors = [
+    {name = "CyberSport Masters", email = "git@csmpro.ru"},
+]
+
+dependencies = [
+    "requests>=2.20.0",
+]
+
+[project.entry-points."pretix.plugin"]
+pretix_paykeeper = "pretix_paykeeper.apps:PretixPluginMeta"
+
+[build-system]
+requires = [
+    "setuptools",
+    "pretix-plugin-build",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "pretix_paykeeper.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["pretix*"]
+namespaces = false
