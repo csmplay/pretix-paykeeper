@@ -246,13 +246,21 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             }
             service_name_value = json.dumps(service_data, ensure_ascii=False)
 
+        client_name = ''
+        client_phone = ''
+        if order.invoice_address:
+            if order.invoice_address.name:
+                client_name = order.invoice_address.name
+        if not client_name:
+            client_name = order.email or ''
+
         data = {
             'pay_amount': '{:.2f}'.format(payment.amount),
-            'clientid': order.email or '',
+            'clientid': client_name,
             'orderid': order_id,
             'service_name': service_name_value,
             'client_email': order.email or '',
-            'client_phone': '',
+            'client_phone': client_phone,
             'expiry': expiry_date,
             'token': token,
             'user_result_callback': callback_url,
