@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.entry-points."pretix.plugin"]
-pretix_paykeeper = "pretix_paykeeper.apps:PretixPluginMeta"
+pretix_paykeeper = "pretix_paykeeper"
 
 [build-system]
 requires = [
