@@ -174,6 +174,22 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         except ValueError:
             raise PaymentException(_('Invalid response from Paykeeper server.'))
 
+    def _get_name_for_invoice(self, invoice_address):
+        if not invoice_address:
+            return ''
+
+        name_parts = invoice_address.name_parts
+        if name_parts:
+            family_name = name_parts.get('family_name', '')
+            given_name = name_parts.get('given_name', '')
+            middle_name = name_parts.get('middle_name', '')
+
+            parts = [p for p in [family_name, given_name, middle_name] if p]
+            if parts:
+                return ' '.join(parts)
+
+        return invoice_address.name or ''
+
     def _get_tax_rate(self, position):
         if not hasattr(position, 'tax_rate') or position.tax_rate is None:
             return None
@@ -249,8 +265,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         client_name = ''
         client_phone = ''
         if order.invoice_address:
-            if order.invoice_address.name:
-                client_name = order.invoice_address.name
+            client_name = self._get_name_for_invoice(order.invoice_address)
         if not client_name:
             client_name = order.email or ''
 
