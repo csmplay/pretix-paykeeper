@@ -23,11 +23,15 @@ TAX_MAP = {
     '7': 'vat7',
     '10': 'vat10',
     '20': 'vat20',
+    '22': 'vat22',
     '105': 'vat105',
     '107': 'vat107',
     '110': 'vat110',
     '120': 'vat120',
+    '122': 'vat122',
 }
+
+TAX_FREE_CODES = {'E', 'O', 'AE', 'G', 'Z', 'K', 'L', 'M', 'B'}
 
 
 class PaykeeperSettingsForm(forms.Form):
@@ -193,6 +197,13 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
     def _get_tax_rate(self, position):
         if not hasattr(position, 'tax_rate') or position.tax_rate is None:
             return None
+
+        tax_code = getattr(position, 'tax_code', None)
+        if tax_code:
+            code_prefix = tax_code.split('/')[0] if '/' in tax_code else tax_code
+            if code_prefix in TAX_FREE_CODES:
+                return None
+
         rate = position.tax_rate
         if rate == Decimal('0'):
             return '0'
