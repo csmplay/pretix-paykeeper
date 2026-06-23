@@ -33,6 +33,12 @@ TAX_MAP = {
 
 TAX_FREE_CODES = {'O', 'E', 'Z', 'G', 'K'}
 
+ITEM_TYPES = {
+    'goods', 'service', 'work', 'excise', 'ip', 'payment',
+    'agent', 'property_right', 'non_operating', 'sales_tax',
+    'resort_fee', 'other',
+}
+
 
 class PaykeeperSettingsForm(forms.Form):
     server_url = forms.URLField(
@@ -237,8 +243,12 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             tax_rate = self._get_tax_rate(pos)
             paykeeper_tax = TAX_MAP.get(tax_rate, 'none')
 
+            raw_type = pos.item.meta_data.get('item_type', '') or ''
+            item_type = raw_type if raw_type in ITEM_TYPES else 'service'
+
             cart_items.append({
                 'name': item_name,
+                'item_type': item_type,
                 'price': '{:.2f}'.format(unit_price),
                 'quantity': 1,
                 'sum': '{:.2f}'.format(total),
@@ -292,6 +302,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             'client_email': order.email or '',
             'client_phone': client_phone,
             'expiry': expiry_date,
+            'payment_type': 'prepay',
             'token': token,
             'user_result_callback': callback_url,
         }
