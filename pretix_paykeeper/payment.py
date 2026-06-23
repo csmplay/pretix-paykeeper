@@ -272,7 +272,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
 
     def _create_invoice(self, order, payment):
         token = self._get_token()
-        expiry_date = (now().astimezone(ZoneInfo('Europe/Moscow')) + timedelta(hours=self._get_expiry_hours())).strftime('%Y-%m-%d')
+        expiry_date = (now().astimezone(ZoneInfo('Europe/Moscow')) + timedelta(hours=self._get_expiry_hours())).strftime('%Y-%m-%d %H:%M:%S')
         order_id = '{}-{}-{}'.format(order.event.slug, order.code, payment.pk)
 
         callback_url = build_absolute_uri(
