@@ -199,6 +199,10 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             return None
 
         tax_code = getattr(position, 'tax_code', None)
+        if not tax_code:
+            tax_rule = getattr(position, 'tax_rule', None)
+            if tax_rule:
+                tax_code = getattr(tax_rule, 'code', None)
         if tax_code:
             code_prefix = tax_code.split('/')[0] if '/' in tax_code else tax_code
             if code_prefix in TAX_FREE_CODES:
