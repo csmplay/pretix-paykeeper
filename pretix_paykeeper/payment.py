@@ -249,6 +249,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             cart_items.append({
                 'name': item_name,
                 'item_type': item_type,
+                'payment_type': 'prepay',
                 'price': '{:.2f}'.format(unit_price),
                 'quantity': 1,
                 'sum': '{:.2f}'.format(total),
@@ -259,6 +260,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             total_amount = float(payment.amount)
             cart_items.append({
                 'name': self._get_service_name(),
+                'payment_type': 'prepay',
                 'price': '{:.2f}'.format(total_amount),
                 'quantity': 1,
                 'sum': '{:.2f}'.format(total_amount),
@@ -302,7 +304,6 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             'client_email': order.email or '',
             'client_phone': client_phone,
             'expiry': expiry_date,
-            'payment_type': 'prepay',
             'token': token,
             'user_result_callback': callback_url,
         }
@@ -347,6 +348,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         invoice_url = invoice_data.get('invoice_url')
 
         if not invoice_id or not invoice_url:
+            logger.error('Paykeeper: incomplete response for %s: %s', payment.order.code, invoice_data)
             raise PaymentException(_('Paykeeper returned an incomplete response.'))
 
         payment.info = json.dumps({
@@ -361,8 +363,34 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         if payment.info:
             try:
                 info = json.loads(payment.info)
-                if info.get('invoice_url') and info.get('invoice_id'):
-                    return True
+                existing_id = info.get('invoice_id')
+                existing_url = info.get('invoice_url')
+                if existing_id and existing_url:
+                    try:
+                        status_data = self._check_invoice_status(existing_id)
+                        if isinstance(status_data, list) and len(status_data) > 0:
+                            status = status_data[0].get('status', '')
+                        elif isinstance(status_data, dict):
+                            status = status_data.get('status', '')
+                        else:
+                            status = ''
+                        if status in ('new', 'pending', 'processing') or (not status and existing_id):
+                            return True
+                        if status == 'paid':
+                            logger.info(
+                                'Paykeeper: invoice %s for %s already paid',
+                                existing_id, payment.order.code,
+                            )
+                            return True
+                        logger.warning(
+                            'Paykeeper: invoice %s for %s has status "%s", recreating',
+                            existing_id, payment.order.code, status,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            'Paykeeper: failed to check invoice %s status for %s: %s',
+                            existing_id, payment.order.code, str(e),
+                        )
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
@@ -376,6 +404,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         invoice_url = invoice_data.get('invoice_url')
 
         if not invoice_id or not invoice_url:
+            logger.error('Paykeeper: incomplete response on recreate for %s: %s', payment.order.code, invoice_data)
             return False
 
         payment.info = json.dumps({
@@ -453,6 +482,12 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
                 info = json.loads(payment.info)
                 invoice_id = info.get('invoice_id')
                 if invoice_id:
-                    self._revoke_invoice(invoice_id)
+                    try:
+                        self._revoke_invoice(invoice_id)
+                        logger.info('Paykeeper: revoked invoice %s for %s', invoice_id, payment.order.code)
+                    except PaymentException as e:
+                        logger.error('Paykeeper: failed to revoke invoice %s for %s: %s', invoice_id, payment.order.code, str(e))
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
+            payment.info = ''
+            payment.save(update_fields=['info'])
