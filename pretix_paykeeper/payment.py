@@ -51,13 +51,13 @@ class PaykeeperSettingsForm(forms.Form):
         required=True,
         widget=forms.PasswordInput(render_value=True),
     )
-    invoice_expiry_days = forms.IntegerField(
-        label=_('Invoice Expiry (days)'),
-        help_text=_('How many days the invoice stays valid'),
+    invoice_expiry_hours = forms.IntegerField(
+        label=_('Invoice Expiry (hours)'),
+        help_text=_('How many hours the invoice stays valid'),
         required=False,
-        initial=7,
+        initial=1,
         min_value=1,
-        max_value=30,
+        max_value=72,
     )
     service_name = forms.CharField(
         label=_('Service Name'),
@@ -88,7 +88,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             ('server_url', PaykeeperSettingsForm.base_fields['server_url']),
             ('api_user', PaykeeperSettingsForm.base_fields['api_user']),
             ('api_password', PaykeeperSettingsForm.base_fields['api_password']),
-            ('invoice_expiry_days', PaykeeperSettingsForm.base_fields['invoice_expiry_days']),
+            ('invoice_expiry_hours', PaykeeperSettingsForm.base_fields['invoice_expiry_hours']),
             ('service_name', PaykeeperSettingsForm.base_fields['service_name']),
             ('send_receipt', PaykeeperSettingsForm.base_fields['send_receipt']),
         ])
@@ -106,8 +106,8 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         password = self.settings.get('api_password') or ''
         return user, password
 
-    def _get_expiry_days(self):
-        return int(self.settings.get('invoice_expiry_days') or 7)
+    def _get_expiry_hours(self):
+        return int(self.settings.get('invoice_expiry_hours') or 1)
 
     def _get_service_name(self):
         return self.settings.get('service_name') or _('Event tickets')
@@ -255,7 +255,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
 
     def _create_invoice(self, order, payment):
         token = self._get_token()
-        expiry_date = (now() + timedelta(days=self._get_expiry_days())).strftime('%Y-%m-%d')
+        expiry_date = (now() + timedelta(hours=self._get_expiry_hours())).strftime('%Y-%m-%d')
         order_id = '{}-{}-{}'.format(order.event.slug, order.code, payment.pk)
 
         callback_url = build_absolute_uri(
