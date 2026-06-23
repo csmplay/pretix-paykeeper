@@ -31,7 +31,7 @@ TAX_MAP = {
     '122': 'vat122',
 }
 
-TAX_FREE_CODES = {'E', 'O', 'AE', 'G', 'Z', 'K', 'L', 'M', 'B'}
+TAX_FREE_CODES = {'O', 'E', 'Z', 'G', 'K'}
 
 
 class PaykeeperSettingsForm(forms.Form):
