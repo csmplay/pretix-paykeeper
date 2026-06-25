@@ -133,11 +133,12 @@ class ManualFinalReceiptView(View):
             else:
                 return HttpResponseBadRequest('Failed to create final receipt')
         except Exception as e:
+            error_msg = str(e)
             logger.error(
                 'Paykeeper: failed to send manual final receipt for order %s (payment %d): %s',
-                order.code, payment.pk, str(e),
+                order.code, payment.pk, error_msg,
             )
-            return HttpResponseBadRequest(f'Error: {str(e)}')
+            return HttpResponseBadRequest(f'Error: {error_msg}')
 
     def get(self, request, *args, **kwargs):
         return HttpResponseBadRequest('Method not allowed')

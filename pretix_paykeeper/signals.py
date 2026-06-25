@@ -6,6 +6,7 @@ from django.dispatch import receiver
 from django.utils.timezone import now
 from pretix.base.models import Order, OrderPayment
 from pretix.base.signals import periodic_task, register_payment_providers
+from pretix.base.services.mail import mail
 from pretix.helpers.periodic import minimum_interval
 
 logger = logging.getLogger('pretix_paykeeper')
@@ -24,6 +25,7 @@ def issue_final_receipts(sender, **kwargs):
     from .payment import PaykeeperPaymentProvider
 
     today = now().date()
+    failures = []
 
     orders = Order.objects.filter(
         status=Order.STATUS_PAID,
@@ -72,7 +74,46 @@ def issue_final_receipts(sender, **kwargs):
                         order.code, payment.pk,
                     )
             except Exception as e:
+                error_msg = str(e)
                 logger.error(
                     'Paykeeper: failed to send final receipt for order %s (payment %d): %s',
-                    order.code, payment.pk, str(e),
+                    order.code, payment.pk, error_msg,
                 )
+                failures.append({
+                    'order': order.code,
+                    'payment_pk': payment.pk,
+                    'error': error_msg,
+                    'event': order.event,
+                })
+
+    if failures:
+        _send_failure_summary(failures)
+
+
+def _send_failure_summary(failures):
+    event = failures[0]['event']
+
+    admins = event.get_users_with_permission('can_view_orders')
+    if not admins:
+        return
+
+    emails = [u.email for u in admins if u.email]
+    if not emails:
+        return
+
+    lines = []
+    for f in failures:
+        lines.append('- {} (payment {}): {}'.format(f['order'], f['payment_pk'], f['error']))
+
+    mail(
+        emails,
+        'Paykeeper: {} final receipt(s) failed today'.format(len(failures)),
+        'pretix_paykeeper/email/failure_summary.txt',
+        context={
+            'event': event.name,
+            'count': len(failures),
+            'failures': '\n'.join(lines),
+        },
+        event=event,
+        auto_email=True,
+    )

@@ -1,0 +1,5 @@
+{% blocktrans count counter=count %}One final receipt (54-FZ) failed to be created for event {{ event }} today:{% plural %}{{ counter }} final receipts (54-FZ) failed to be created for event {{ event }} today:{% endblocktrans %}
+
+{{ failures }}
+
+{% blocktrans %}Please check the Paykeeper logs and manually send the final receipts if needed.{% endblocktrans %}
