@@ -69,6 +69,12 @@ class PaykeeperSettingsForm(forms.Form):
         required=False,
         initial=False,
     )
+    final_receipt_enabled = forms.BooleanField(
+        label=_('Automatic final receipt (54-FZ)'),
+        help_text=_('Automatically issue a final settlement receipt on the day of the event'),
+        required=False,
+        initial=False,
+    )
 
 
 class PaykeeperPaymentProvider(BasePaymentProvider):
@@ -87,6 +93,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             ('api_password', PaykeeperSettingsForm.base_fields['api_password']),
             ('service_name', PaykeeperSettingsForm.base_fields['service_name']),
             ('send_receipt', PaykeeperSettingsForm.base_fields['send_receipt']),
+            ('final_receipt_enabled', PaykeeperSettingsForm.base_fields['final_receipt_enabled']),
         ])
 
     @property
@@ -306,6 +313,105 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         data = {'id': invoice_id, 'token': token}
         return self._api_post('/change/invoice/revoke/', data=data)
 
+    def _get_payment_id(self, invoice_id):
+        try:
+            status_data = self._check_invoice_status(invoice_id)
+            if isinstance(status_data, list) and len(status_data) > 0:
+                return status_data[0].get('payment_id')
+            elif isinstance(status_data, dict):
+                return status_data.get('payment_id')
+        except Exception as e:
+            logger.error('Paykeeper: failed to get payment_id for invoice %s: %s', invoice_id, str(e))
+        return None
+
+    def _build_final_receipt_cart(self, order):
+        cart_items = []
+        for pos in order.positions.all():
+            item_name = str(pos.item.name)
+            if pos.variation:
+                item_name = f'{item_name} ({pos.variation})'
+            unit_price = float(pos.price)
+            total = float(pos.price)
+            tax_rate = self._get_tax_rate(pos)
+            paykeeper_tax = TAX_MAP.get(tax_rate, 'none')
+
+            raw_type = pos.item.meta_data.get('item_type', '') or ''
+            item_type = raw_type if raw_type in ITEM_TYPES else 'service'
+
+            cart_items.append({
+                'name': item_name,
+                'item_type': item_type,
+                'payment_type': 'full',
+                'price': '{:.2f}'.format(unit_price),
+                'quantity': 1,
+                'sum': '{:.2f}'.format(total),
+                'tax': paykeeper_tax,
+            })
+
+        if not cart_items:
+            total_amount = float(order.total)
+            cart_items.append({
+                'name': self._get_service_name(),
+                'payment_type': 'full',
+                'price': '{:.2f}'.format(total_amount),
+                'quantity': 1,
+                'sum': '{:.2f}'.format(total_amount),
+                'tax': 'none',
+            })
+
+        return json.dumps(cart_items, ensure_ascii=False)
+
+    def _create_final_receipt(self, order, payment):
+        info = json.loads(payment.info) if payment.info else {}
+        invoice_id = info.get('invoice_id')
+        if not invoice_id:
+            logger.error('Paykeeper: no invoice_id for payment %d, cannot create final receipt', payment.pk)
+            return False
+
+        payment_id = info.get('payment_id')
+        if not payment_id:
+            payment_id = self._get_payment_id(invoice_id)
+        if not payment_id:
+            logger.error('Paykeeper: no payment_id for invoice %s, cannot create final receipt', invoice_id)
+            return False
+
+        token = self._get_token()
+        cart = self._build_final_receipt_cart(order)
+
+        contact = ''
+        if order.invoice_address:
+            contact = self._get_name_for_invoice(order.invoice_address)
+        if not contact:
+            contact = order.email or ''
+
+        receipt_key = f'{order.code}-final-{payment.pk}'
+
+        data = {
+            'payment_id': str(payment_id),
+            'is_post_sale': 'true',
+            'type': 'sale',
+            'contact': contact,
+            'cart': cart,
+            'receipt_key': receipt_key,
+            'token': token,
+        }
+
+        try:
+            result = self._api_post('/change/receipt/print/', data=data)
+            receipt_id = result.get('receipt_id')
+            if receipt_id:
+                logger.info(
+                    'Paykeeper: final receipt %s created for order %s (payment %d)',
+                    receipt_id, order.code, payment.pk,
+                )
+                return True
+            else:
+                logger.error('Paykeeper: no receipt_id in response for %s: %s', order.code, result)
+                return False
+        except PaymentException as e:
+            logger.error('Paykeeper: failed to create final receipt for %s: %s', order.code, str(e))
+            return False
+
     def payment_form_fields(self):
         return OrderedDict()
 
@@ -341,6 +447,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         payment.info = json.dumps({
             'invoice_id': invoice_id,
             'invoice_url': invoice_url,
+            'payment_id': invoice_data.get('payment_id'),
         })
         payment.save(update_fields=['info'])
 
@@ -397,6 +504,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         payment.info = json.dumps({
             'invoice_id': invoice_id,
             'invoice_url': invoice_url,
+            'payment_id': invoice_data.get('payment_id'),
         })
         payment.save(update_fields=['info'])
 
@@ -405,15 +513,17 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
     def payment_control_render(self, request, payment):
         invoice_id = None
         invoice_url = None
+        final_receipt_sent = False
         if payment.info:
             try:
                 info = json.loads(payment.info)
                 invoice_id = info.get('invoice_id')
                 invoice_url = info.get('invoice_url')
+                final_receipt_sent = info.get('final_receipt_sent', False)
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
-        return (
+        html = (
             '<dl>'
             '<dt>{label_id}</dt><dd>{val_id}</dd>'
             '<dt>{label_url}</dt><dd><a href="{val_url}" target="_blank">{val_url}</a></dd>'
@@ -424,6 +534,30 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             label_url=_('Invoice URL'),
             val_url=invoice_url or _('N/A'),
         )
+
+        if self.settings.get('final_receipt_enabled', as_type=bool):
+            if final_receipt_sent:
+                html += '<p><strong>{}</strong></p>'.format(_('Final receipt sent'))
+            else:
+                from django.middleware.csrf import get_token
+                button_url = build_absolute_uri(
+                    payment.order.event,
+                    'plugins:pretix_paykeeper:manual-final-receipt',
+                    kwargs={'order': payment.order.code, 'payment_pk': payment.pk},
+                )
+                csrf = get_token(request)
+                html += (
+                    '<form method="post" action="{url}" style="margin-top: 10px;">'
+                    '<input type="hidden" name="csrfmiddlewaretoken" value="{csrf}">'
+                    '<button type="submit" class="btn btn-primary btn-sm">{label}</button>'
+                    '</form>'
+                ).format(
+                    url=button_url,
+                    csrf=csrf,
+                    label=_('Send final receipt now'),
+                )
+
+        return html
 
     def payment_control_render_short(self, order, payment):
         return _('Paykeeper invoice')

@@ -78,3 +78,66 @@ class PaykeeperCallbackView(View):
 
     def get(self, request, *args, **kwargs):
         return self.post(request, *args, **kwargs)
+
+
+class ManualFinalReceiptView(View):
+    def post(self, request, *args, **kwargs):
+        order_code = kwargs.get('order')
+        payment_pk = kwargs.get('payment_pk')
+
+        try:
+            order = Order.objects.get(
+                code=order_code,
+                event=request.event,
+            )
+        except Order.DoesNotExist:
+            return HttpResponseBadRequest('Order not found')
+
+        try:
+            payment = order.payments.get(
+                pk=payment_pk,
+                provider='paykeeper',
+            )
+        except OrderPayment.DoesNotExist:
+            return HttpResponseBadRequest('Payment not found')
+
+        if payment.state != OrderPayment.PAYMENT_STATE_CONFIRMED:
+            return HttpResponseBadRequest('Payment is not confirmed')
+
+        if not payment.info:
+            return HttpResponseBadRequest('Payment has no info')
+
+        try:
+            info = json.loads(payment.info)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return HttpResponseBadRequest('Invalid payment info')
+
+        if info.get('final_receipt_sent'):
+            return HttpResponse('Final receipt already sent', status=200)
+
+        if not info.get('invoice_id'):
+            return HttpResponseBadRequest('No invoice_id in payment info')
+
+        prov = PaykeeperPaymentProvider(order.event)
+        try:
+            success = prov._create_final_receipt(order, payment)
+            if success:
+                info['final_receipt_sent'] = True
+                payment.info = json.dumps(info)
+                payment.save(update_fields=['info'])
+                logger.info(
+                    'Paykeeper: manual final receipt sent for order %s (payment %d)',
+                    order.code, payment.pk,
+                )
+                return HttpResponse('Final receipt sent successfully')
+            else:
+                return HttpResponseBadRequest('Failed to create final receipt')
+        except Exception as e:
+            logger.error(
+                'Paykeeper: failed to send manual final receipt for order %s (payment %d): %s',
+                order.code, payment.pk, str(e),
+            )
+            return HttpResponseBadRequest(f'Error: {str(e)}')
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponseBadRequest('Method not allowed')

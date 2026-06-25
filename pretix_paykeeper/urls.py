@@ -8,4 +8,9 @@ event_patterns = [
         views.PaykeeperCallbackView.as_view(),
         name='callback',
     ),
+    re_path(
+        r'^paykeeper/manual-final-receipt/(?P<order>[^/]+)/(?P<payment_pk>\d+)/$',
+        views.ManualFinalReceiptView.as_view(),
+        name='manual-final-receipt',
+    ),
 ]
