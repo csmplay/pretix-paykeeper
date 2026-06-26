@@ -317,6 +317,9 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
     def _check_invoice_status(self, invoice_id):
         return self._api_get('/info/invoice/byid/', params={'id': invoice_id})
 
+    def _get_payment_info(self, payment_id):
+        return self._api_get('/info/payments/byid/', params={'id': payment_id})
+
     def _revoke_invoice(self, invoice_id):
         token = self._get_token()
         data = {'id': invoice_id, 'token': token}
@@ -626,7 +629,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         info = json.loads(payment.info) if payment.info else {}
         invoice_id = info.get('invoice_id')
         if not invoice_id:
-            raise PaymentException(_('No invoice_id in payment info, cannot create refund receipt.'))
+            raise PaymentException(_('No invoice_id in payment info, cannot create refund.'))
 
         payment_id = info.get('payment_id')
         if not payment_id:
@@ -636,57 +639,36 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
                 payment.info = json.dumps(info)
                 payment.save(update_fields=['info'])
         if not payment_id:
-            raise PaymentException(_('No payment_id for invoice %s, cannot create refund receipt.') % invoice_id)
+            raise PaymentException(_('No payment_id for invoice %s, cannot create refund.') % invoice_id)
 
         token = self._get_token()
+        is_partial = refund.amount < payment.amount
 
-        contact = ''
-        if payment.order.invoice_address:
-            contact = self._get_name_for_invoice(payment.order.invoice_address)
-        if not contact:
-            contact = payment.order.email or ''
-
-        cart = json.dumps([{
-            'name': str(_('Refund')),
-            'payment_type': 'full',
-            'price': '{:.2f}'.format(float(refund.amount)),
-            'quantity': 1,
-            'sum': '{:.2f}'.format(float(refund.amount)),
-            'tax': 'none',
-        }], ensure_ascii=False)
-
-        receipt_key = f'{payment.order.code}-refund-{refund.local_id}'
-
-        data = {
-            'payment_id': str(payment_id),
-            'type': 'refund',
-            'contact': contact,
-            'cart': cart,
-            'sum_cashless': '{:.2f}'.format(float(refund.amount)),
-            'refund_id': str(refund.local_id),
-            'receipt_key': receipt_key,
+        reverse_data = {
+            'id': str(payment_id),
+            'partial': 'true' if is_partial else 'false',
             'token': token,
         }
+        if is_partial:
+            reverse_data['amount'] = '{:.2f}'.format(float(refund.amount))
+            reverse_data['refund_cart'] = self._build_final_receipt_cart(payment.order, payment)
 
         try:
-            result = self._api_post('/change/receipt/print/', data=data)
-            receipt_id = result.get('receipt_id')
-            if receipt_id:
-                logger.info(
-                    'Paykeeper: refund receipt %s created for %s (refund %s)',
-                    receipt_id, payment.order.code, refund.full_id,
-                )
-                refund.info_data['receipt_id'] = receipt_id
-                refund.save(update_fields=['info'])
-                refund.done()
-            else:
-                logger.error('Paykeeper: no receipt_id in refund response for %s: %s', payment.order.code, result)
-                raise PaymentException(_('Paykeeper did not return a receipt_id for the refund.'))
-        except PaymentException:
-            raise
+            result = self._api_post('/change/payment/reverse/', data=reverse_data)
         except Exception as e:
-            logger.error('Paykeeper: failed to create refund receipt for %s: %s', payment.order.code, str(e))
-            raise PaymentException(_('Failed to create refund receipt: %s') % str(e))
+            logger.error('Paykeeper: failed to reverse payment for %s: %s', payment.order.code, str(e))
+            raise PaymentException(_('Failed to process refund: %s') % str(e))
+
+        if result.get('result') != 'success':
+            msg = result.get('msg', 'Unknown error')
+            logger.error('Paykeeper: reverse failed for %s: %s', payment.order.code, msg)
+            raise PaymentException(_('Refund rejected by Paykeeper: %s') % msg)
+
+        logger.info(
+            'Paykeeper: refund initiated for %s (payment %d, amount %s, partial=%s)',
+            payment.order.code, payment.pk, refund.amount, is_partial,
+        )
+        refund.done()
 
     def calculate_fee(self, price):
         return Decimal('0.00')
