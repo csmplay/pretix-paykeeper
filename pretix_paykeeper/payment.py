@@ -586,10 +586,76 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         return 'Paykeeper'
 
     def payment_refund_supported(self, payment):
-        return False
+        return True
 
     def payment_partial_refund_supported(self, payment):
-        return False
+        return True
+
+    def execute_refund(self, refund):
+        payment = refund.payment
+        if not payment:
+            raise PaymentException(_('Refund is not linked to a payment.'))
+
+        info = json.loads(payment.info) if payment.info else {}
+        invoice_id = info.get('invoice_id')
+        if not invoice_id:
+            raise PaymentException(_('No invoice_id in payment info, cannot create refund receipt.'))
+
+        payment_id = info.get('payment_id')
+        if not payment_id:
+            payment_id = self._get_payment_id(invoice_id)
+        if not payment_id:
+            raise PaymentException(_('No payment_id for invoice %s, cannot create refund receipt.') % invoice_id)
+
+        token = self._get_token()
+
+        contact = ''
+        if payment.order.invoice_address:
+            contact = self._get_name_for_invoice(payment.order.invoice_address)
+        if not contact:
+            contact = payment.order.email or ''
+
+        cart = json.dumps([{
+            'name': str(_('Refund')),
+            'payment_type': 'full',
+            'price': '{:.2f}'.format(float(refund.amount)),
+            'quantity': 1,
+            'sum': '{:.2f}'.format(float(refund.amount)),
+            'tax': 'none',
+        }], ensure_ascii=False)
+
+        receipt_key = f'{payment.order.code}-refund-{refund.local_id}'
+
+        data = {
+            'payment_id': str(payment_id),
+            'type': 'refund',
+            'contact': contact,
+            'cart': cart,
+            'sum_cashless': '{:.2f}'.format(float(refund.amount)),
+            'refund_id': str(refund.local_id),
+            'receipt_key': receipt_key,
+            'token': token,
+        }
+
+        try:
+            result = self._api_post('/change/receipt/print/', data=data)
+            receipt_id = result.get('receipt_id')
+            if receipt_id:
+                logger.info(
+                    'Paykeeper: refund receipt %s created for %s (refund %s)',
+                    receipt_id, payment.order.code, refund.full_id,
+                )
+                refund.info_data['receipt_id'] = receipt_id
+                refund.save(update_fields=['info'])
+                refund.done()
+            else:
+                logger.error('Paykeeper: no receipt_id in refund response for %s: %s', payment.order.code, result)
+                raise PaymentException(_('Paykeeper did not return a receipt_id for the refund.'))
+        except PaymentException:
+            raise
+        except Exception as e:
+            logger.error('Paykeeper: failed to create refund receipt for %s: %s', payment.order.code, str(e))
+            raise PaymentException(_('Failed to create refund receipt: %s') % str(e))
 
     def calculate_fee(self, price):
         return Decimal('0.00')
