@@ -221,6 +221,11 @@ class PaykeeperWebhookView(View):
 class ManualFinalReceiptView(EventPermissionRequiredMixin, View):
     permission = 'can_view_orders'
 
+    @classmethod
+    def as_view(cls, **initkwargs):
+        view = super().as_view(**initkwargs)
+        return csrf_exempt(view)
+
     def post(self, request, *args, **kwargs):
         order_code = kwargs.get('order')
         payment_pk = kwargs.get('payment_pk')
