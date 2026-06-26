@@ -1,6 +1,7 @@
 import json
 import logging
 
+from django.db.models import Q
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import redirect
 from django.utils.decorators import method_decorator
@@ -19,21 +20,11 @@ def _find_payment_global(identifier):
     str_id = str(identifier)
     candidates = OrderPayment.objects.filter(
         provider='paykeeper',
-        info__contains=str_id,
+    ).filter(
+        Q(info__payment_id=str_id) | Q(info__invoice_id=str_id)
     ).select_related('order', 'order__event').order_by('-pk')
 
-    for p in candidates:
-        if not p.info:
-            continue
-        try:
-            info = json.loads(p.info)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            continue
-        if str(info.get('payment_id')) == str_id:
-            return p
-        if str(info.get('invoice_id')) == str_id:
-            return p
-    return None
+    return candidates.first()
 
 
 def _extract_status(api_response):
