@@ -137,21 +137,6 @@ def _order_redirect(order):
 @method_decorator(csrf_exempt, name='dispatch')
 class PaykeeperCallbackView(View):
     def post(self, request, *args, **kwargs):
-        order_code = kwargs.get('order')
-
-        try:
-            body = json.loads(request.body)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning('Paykeeper callback: invalid JSON body for order %s', order_code)
-            return HttpResponseBadRequest('Invalid JSON')
-
-        identifier = body.get('id') or body.get('invoice_id') or body.get('payment_id')
-        callback_status = body.get('status')
-
-        logger.info(
-            'Paykeeper callback (ignored, use webhook): order=%s identifier=%s status=%s',
-            order_code, identifier, callback_status,
-        )
         return HttpResponse('OK')
 
     def get(self, request, *args, **kwargs):
@@ -173,8 +158,6 @@ class PaykeeperCallbackView(View):
 @method_decorator(csrf_exempt, name='dispatch')
 class PaykeeperWebhookView(View):
     def post(self, request, *args, **kwargs):
-        logger.warning('Paykeeper webhook raw body: %s', request.body.decode(errors='replace'))
-
         content_type = request.content_type or ''
         if 'json' in content_type:
             try:
