@@ -88,6 +88,7 @@ def _extract_status(api_response):
     return None
 
 
+@scopes_disabled()
 def _process_payment(order, payment, callback_status=None):
     if payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED:
         return
