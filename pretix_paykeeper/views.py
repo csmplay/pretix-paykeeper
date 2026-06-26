@@ -19,36 +19,19 @@ from .payment import PaykeeperPaymentProvider
 logger = logging.getLogger('pretix_paykeeper')
 
 
-def _verify_webhook_key(body):
+def _verify_webhook_key(body, event):
     key = body.get('key')
     if not key:
         return False
 
-    orderid = body.get('orderid', '')
-    parts = orderid.split('-', 2)
-    if len(parts) < 3:
-        logger.warning('Paykeeper webhook: cannot extract event slug from orderid %s', orderid)
-        return False
-
-    event_slug = parts[0]
-
-    from pretix.base.models import Event
-
-    try:
-        with scopes_disabled():
-            event = Event.objects.get(slug=event_slug)
-    except Event.DoesNotExist:
-        logger.warning('Paykeeper webhook: event %s not found', event_slug)
-        return False
-
     secret_word = event.settings.get('payment_paykeeper_secret_word', '') or ''
     if not secret_word:
-        logger.warning('Paykeeper webhook: no secret_word configured for event %s', event_slug)
         return False
 
     id_val = body.get('id', '')
     sum_val = body.get('sum', '')
     clientid = body.get('clientid', '')
+    orderid = body.get('orderid', '')
 
     params = id_val + sum_val + clientid + orderid
     expected = hashlib.md5((params + secret_word).encode('utf-8')).hexdigest()
@@ -177,13 +160,6 @@ class PaykeeperWebhookView(View):
         identifier = body.get('invoice_id') or body.get('payment_id') or body.get('id')
         callback_status = body.get('status')
 
-        if not _verify_webhook_key(body):
-            logger.warning(
-                'Paykeeper webhook: invalid key for identifier=%s body=%s',
-                identifier, body,
-            )
-            return HttpResponse('OK')
-
         if not identifier:
             logger.warning('Paykeeper webhook: missing identifier')
             return HttpResponse('OK')
@@ -192,6 +168,13 @@ class PaykeeperWebhookView(View):
 
         if not payment:
             logger.warning('Paykeeper webhook: payment not found for identifier %s', identifier)
+            return HttpResponse('OK')
+
+        if not _verify_webhook_key(body, payment.order.event):
+            logger.warning(
+                'Paykeeper webhook: invalid key for payment %d identifier=%s',
+                payment.pk, identifier,
+            )
             return HttpResponse('OK')
 
         webhook_sum = body.get('sum', '')
