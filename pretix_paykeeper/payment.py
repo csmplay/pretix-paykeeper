@@ -232,8 +232,8 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             return '20'
         return None
 
-    def _build_cart(self, order, payment):
-        if not self.settings.get('send_receipt', as_type=bool):
+    def _build_cart(self, order, payment, payment_type='prepay', match_amount=False):
+        if not match_amount and not self.settings.get('send_receipt', as_type=bool):
             return None
 
         cart_items = []
@@ -252,7 +252,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             cart_items.append({
                 'name': item_name,
                 'item_type': item_type,
-                'payment_type': 'prepay',
+                'payment_type': payment_type,
                 'price': '{:.2f}'.format(unit_price),
                 'quantity': 1,
                 'sum': '{:.2f}'.format(total),
@@ -263,12 +263,20 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             total_amount = float(payment.amount)
             cart_items.append({
                 'name': self._get_service_name(),
-                'payment_type': 'prepay',
+                'payment_type': payment_type,
                 'price': '{:.2f}'.format(total_amount),
                 'quantity': 1,
                 'sum': '{:.2f}'.format(total_amount),
                 'tax': 'none',
             })
+        elif match_amount:
+            cart_sum = sum(float(item['sum']) for item in cart_items)
+            diff = round(float(payment.amount) - cart_sum, 2)
+            if diff != 0:
+                last = cart_items[-1]
+                adjusted = round(float(last['sum']) + diff, 2)
+                last['sum'] = '{:.2f}'.format(adjusted)
+                last['price'] = last['sum']
 
         return json.dumps(cart_items, ensure_ascii=False)
 
@@ -336,43 +344,6 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             logger.error('Paykeeper: failed to get payment_id for invoice %s: %s', invoice_id, str(e))
         return None
 
-    def _build_final_receipt_cart(self, order, payment):
-        cart_items = []
-        for pos in order.positions.all():
-            item_name = str(pos.item.name)
-            if pos.variation:
-                item_name = f'{item_name} ({pos.variation})'
-            unit_price = float(pos.price)
-            total = float(pos.price)
-            tax_rate = self._get_tax_rate(pos)
-            paykeeper_tax = TAX_MAP.get(tax_rate, 'none')
-
-            raw_type = pos.item.meta_data.get('item_type', '') or ''
-            item_type = raw_type if raw_type in ITEM_TYPES else 'service'
-
-            cart_items.append({
-                'name': item_name,
-                'item_type': item_type,
-                'payment_type': 'full',
-                'price': '{:.2f}'.format(unit_price),
-                'quantity': 1,
-                'sum': '{:.2f}'.format(total),
-                'tax': paykeeper_tax,
-            })
-
-        if not cart_items:
-            total_amount = float(payment.amount)
-            cart_items.append({
-                'name': self._get_service_name(),
-                'payment_type': 'full',
-                'price': '{:.2f}'.format(total_amount),
-                'quantity': 1,
-                'sum': '{:.2f}'.format(total_amount),
-                'tax': 'none',
-            })
-
-        return json.dumps(cart_items, ensure_ascii=False)
-
     def _create_final_receipt(self, order, payment):
         info = json.loads(payment.info) if payment.info else {}
         invoice_id = info.get('invoice_id')
@@ -392,7 +363,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             return False
 
         token = self._get_token()
-        cart = self._build_final_receipt_cart(order, payment)
+        cart = self._build_cart(order, payment, payment_type='full', match_amount=True)
 
         contact = ''
         if order.invoice_address:
@@ -414,6 +385,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             'payment_id': str(payment_id),
             'is_post_sale': 'true',
             'type': 'sale',
+            'sum_cashless': '{:.2f}'.format(payment.amount),
             'contact': contact,
             'cart': cart,
             'receipt_key': receipt_key,
@@ -651,7 +623,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         }
         if is_partial:
             reverse_data['amount'] = '{:.2f}'.format(float(refund.amount))
-            reverse_data['refund_cart'] = self._build_final_receipt_cart(payment.order, payment)
+            reverse_data['refund_cart'] = self._build_cart(payment.order, payment, payment_type='full', match_amount=True)
 
         try:
             result = self._api_post('/change/payment/reverse/', data=reverse_data)
