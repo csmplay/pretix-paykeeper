@@ -203,15 +203,19 @@ def check_pending_payments(sender, **kwargs):
 
 
 def _record_periodic_failure(payment, error_msg):
-    failures = cache.get(PERIODIC_FAILURES_CACHE_KEY, [])
-    failures.append({
+    entry = {
         'order': payment.order.code,
         'payment_pk': payment.pk,
         'invoice_id': _extract_invoice_id(payment),
         'error': error_msg,
         'event_id': payment.order.event_id,
         'event_name': str(payment.order.event.name),
-    })
+    }
+    failures = cache.get(PERIODIC_FAILURES_CACHE_KEY)
+    if failures is None:
+        cache.get_or_set(PERIODIC_FAILURES_CACHE_KEY, [], PERIODIC_FAILURES_CACHE_TTL)
+        failures = cache.get(PERIODIC_FAILURES_CACHE_KEY, [])
+    failures.append(entry)
     cache.set(PERIODIC_FAILURES_CACHE_KEY, failures, PERIODIC_FAILURES_CACHE_TTL)
 
 
