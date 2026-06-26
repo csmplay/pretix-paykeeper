@@ -239,21 +239,22 @@ class ManualFinalReceiptView(View):
         order_code = kwargs.get('order')
         payment_pk = kwargs.get('payment_pk')
 
-        try:
-            order = Order.objects.get(
-                code=order_code,
-                event=request.event,
-            )
-        except Order.DoesNotExist:
-            return HttpResponseBadRequest('Order not found')
+        with scopes_disabled():
+            try:
+                order = Order.objects.get(
+                    code=order_code,
+                    event=request.event,
+                )
+            except Order.DoesNotExist:
+                return HttpResponseBadRequest('Order not found')
 
-        try:
-            payment = order.payments.get(
-                pk=payment_pk,
-                provider='paykeeper',
-            )
-        except OrderPayment.DoesNotExist:
-            return HttpResponseBadRequest('Payment not found')
+            try:
+                payment = order.payments.get(
+                    pk=payment_pk,
+                    provider='paykeeper',
+                )
+            except OrderPayment.DoesNotExist:
+                return HttpResponseBadRequest('Payment not found')
 
         if payment.state != OrderPayment.PAYMENT_STATE_CONFIRMED:
             return HttpResponseBadRequest('Payment is not confirmed')
@@ -304,21 +305,22 @@ class ManualPaymentIdView(View):
         order_code = kwargs.get('order')
         payment_pk = kwargs.get('payment_pk')
 
-        try:
-            order = Order.objects.get(
-                code=order_code,
-                event=request.event,
-            )
-        except Order.DoesNotExist:
-            return HttpResponseBadRequest('Order not found')
+        with scopes_disabled():
+            try:
+                order = Order.objects.get(
+                    code=order_code,
+                    event=request.event,
+                )
+            except Order.DoesNotExist:
+                return HttpResponseBadRequest('Order not found')
 
-        try:
-            payment = order.payments.get(
-                pk=payment_pk,
-                provider='paykeeper',
-            )
-        except OrderPayment.DoesNotExist:
-            return HttpResponseBadRequest('Payment not found')
+            try:
+                payment = order.payments.get(
+                    pk=payment_pk,
+                    provider='paykeeper',
+                )
+            except OrderPayment.DoesNotExist:
+                return HttpResponseBadRequest('Payment not found')
 
         payment_id = request.POST.get('payment_id', '').strip()
         if not payment_id:
