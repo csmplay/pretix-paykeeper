@@ -76,6 +76,12 @@ class PaykeeperSettingsForm(forms.Form):
         required=False,
         initial=False,
     )
+    secret_word = forms.CharField(
+        label=_('Secret word'),
+        help_text=_('Secret word from Paykeeper cabinet, used to verify webhook signatures (MD5)'),
+        required=False,
+        max_length=255,
+    )
 
 
 class PaykeeperPaymentProvider(BasePaymentProvider):
@@ -95,6 +101,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             ('service_name', PaykeeperSettingsForm.base_fields['service_name']),
             ('send_receipt', PaykeeperSettingsForm.base_fields['send_receipt']),
             ('final_receipt_enabled', PaykeeperSettingsForm.base_fields['final_receipt_enabled']),
+            ('secret_word', PaykeeperSettingsForm.base_fields['secret_word']),
         ])
 
     @property

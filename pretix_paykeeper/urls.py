@@ -4,7 +4,7 @@ from . import views
 
 urlpatterns = [
     re_path(
-        r'^_paykeeper/webhook/$',
+        r'^_paykeeper/webhook/?$',
         views.PaykeeperWebhookView.as_view(),
         name='webhook',
     ),

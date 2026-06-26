@@ -1,5 +1,7 @@
+import hashlib
 import json
 import logging
+from urllib.parse import parse_qs
 
 from django.db.models import Q
 from django.http import HttpResponse, HttpResponseBadRequest
@@ -7,6 +9,7 @@ from django.shortcuts import redirect
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
+from django_scopes import scopes_disabled
 from pretix.base.models import Order, OrderPayment
 from pretix.control.permissions import EventPermissionRequiredMixin
 from pretix.multidomain.urlreverse import build_absolute_uri
@@ -16,15 +19,53 @@ from .payment import PaykeeperPaymentProvider
 logger = logging.getLogger('pretix_paykeeper')
 
 
+def _verify_webhook_key(body):
+    key = body.get('key')
+    if not key:
+        return False
+
+    orderid = body.get('orderid', '')
+    parts = orderid.split('-', 2)
+    if len(parts) < 3:
+        logger.warning('Paykeeper webhook: cannot extract event slug from orderid %s', orderid)
+        return False
+
+    event_slug = parts[0]
+
+    from pretix.base.models import Event
+
+    try:
+        with scopes_disabled():
+            event = Event.objects.get(slug=event_slug)
+    except Event.DoesNotExist:
+        logger.warning('Paykeeper webhook: event %s not found', event_slug)
+        return False
+
+    secret_word = event.settings.get('payment_paykeeper_secret_word', '') or ''
+    if not secret_word:
+        logger.warning('Paykeeper webhook: no secret_word configured for event %s', event_slug)
+        return False
+
+    id_val = body.get('id', '')
+    sum_val = body.get('sum', '')
+    clientid = body.get('clientid', '')
+
+    params = id_val + sum_val + clientid + orderid
+    expected = hashlib.md5((params + secret_word).encode('utf-8')).hexdigest()
+
+    return key == expected
+
+
 def _find_payment_global(identifier):
     str_id = str(identifier)
-    candidates = OrderPayment.objects.filter(
-        provider='paykeeper',
-    ).filter(
-        Q(info__payment_id=str_id) | Q(info__invoice_id=str_id)
-    ).select_related('order', 'order__event').order_by('-pk')
+    with scopes_disabled():
+        candidates = OrderPayment.objects.filter(
+            provider='paykeeper',
+        ).filter(
+            Q(info__payment_id=str_id) | Q(info__invoice_id=str_id)
+        ).select_related('order', 'order__event').order_by('-pk')
 
-    return candidates.first()
+        return candidates.first()
 
 
 def _extract_status(api_response):
@@ -122,19 +163,26 @@ class PaykeeperWebhookView(View):
     def post(self, request, *args, **kwargs):
         logger.warning('Paykeeper webhook raw body: %s', request.body.decode(errors='replace'))
 
-        try:
-            body = json.loads(request.body)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning('Paykeeper webhook: invalid JSON body')
-            return HttpResponseBadRequest('Invalid JSON')
+        content_type = request.content_type or ''
+        if 'json' in content_type:
+            try:
+                body = json.loads(request.body)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning('Paykeeper webhook: invalid JSON body')
+                return HttpResponseBadRequest('Invalid JSON')
+        else:
+            raw = parse_qs(request.body.decode(errors='replace'))
+            body = {k: v[0] if len(v) == 1 else v for k, v in raw.items()}
 
-        identifier = body.get('id') or body.get('invoice_id') or body.get('payment_id')
+        identifier = body.get('invoice_id') or body.get('payment_id') or body.get('id')
         callback_status = body.get('status')
 
-        logger.warning(
-            'Paykeeper webhook: identifier=%s status=%s body=%s',
-            identifier, callback_status, body,
-        )
+        if not _verify_webhook_key(body):
+            logger.warning(
+                'Paykeeper webhook: invalid key for identifier=%s body=%s',
+                identifier, body,
+            )
+            return HttpResponse('OK')
 
         if not identifier:
             logger.warning('Paykeeper webhook: missing identifier')
@@ -144,6 +192,29 @@ class PaykeeperWebhookView(View):
 
         if not payment:
             logger.warning('Paykeeper webhook: payment not found for identifier %s', identifier)
+            return HttpResponse('OK')
+
+        webhook_sum = body.get('sum', '')
+        expected_sum = '{:.2f}'.format(payment.amount)
+        if webhook_sum != expected_sum:
+            logger.warning(
+                'Paykeeper webhook: sum mismatch for payment %d: got %s, expected %s',
+                payment.pk, webhook_sum, expected_sum,
+            )
+            return HttpResponse('OK')
+
+        webhook_clientid = body.get('clientid', '')
+        prov = PaykeeperPaymentProvider(payment.order.event)
+        expected_clientid = ''
+        if payment.order.invoice_address:
+            expected_clientid = prov._get_name_for_invoice(payment.order.invoice_address)
+        if not expected_clientid:
+            expected_clientid = payment.order.email or ''
+        if webhook_clientid and expected_clientid and webhook_clientid != expected_clientid:
+            logger.warning(
+                'Paykeeper webhook: clientid mismatch for payment %d: got %s, expected %s',
+                payment.pk, webhook_clientid, expected_clientid,
+            )
             return HttpResponse('OK')
 
         _process_payment(payment.order, payment, callback_status)
