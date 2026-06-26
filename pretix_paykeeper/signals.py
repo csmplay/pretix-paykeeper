@@ -2,6 +2,7 @@ import json
 import logging
 from zoneinfo import ZoneInfo
 
+from django.core.cache import cache
 from django.dispatch import receiver
 from django.utils.timezone import now
 from django_scopes import scopes_disabled
@@ -11,6 +12,9 @@ from pretix.base.services.mail import mail
 from pretix.helpers.periodic import minimum_interval
 
 logger = logging.getLogger('pretix_paykeeper')
+
+PERIODIC_FAILURES_CACHE_KEY = 'pretix_paykeeper_periodic_check_failures'
+PERIODIC_FAILURES_CACHE_TTL = 7200  # 2 hours
 
 
 @receiver(register_payment_providers, dispatch_uid="payment_paykeeper")
@@ -153,6 +157,7 @@ def check_pending_payments(sender, **kwargs):
                 'Paykeeper periodic: failed to check invoice %s for order %s: %s',
                 invoice_id, payment.order.code, str(e),
             )
+            _record_periodic_failure(payment, str(e))
             continue
 
         if isinstance(status_data, list) and len(status_data) > 0:
@@ -176,6 +181,7 @@ def check_pending_payments(sender, **kwargs):
                     'Paykeeper periodic: failed to confirm payment %d: %s',
                     payment.pk, str(e),
                 )
+                _record_periodic_failure(payment, str(e))
         elif status in ('expired', 'rejected'):
             if payment.state in (
                 OrderPayment.PAYMENT_STATE_CONFIRMED,
@@ -193,3 +199,75 @@ def check_pending_payments(sender, **kwargs):
                     'Paykeeper periodic: failed to fail payment %d: %s',
                     payment.pk, str(e),
                 )
+                _record_periodic_failure(payment, str(e))
+
+
+def _record_periodic_failure(payment, error_msg):
+    failures = cache.get(PERIODIC_FAILURES_CACHE_KEY, [])
+    failures.append({
+        'order': payment.order.code,
+        'payment_pk': payment.pk,
+        'invoice_id': _extract_invoice_id(payment),
+        'error': error_msg,
+        'event_id': payment.order.event_id,
+        'event_name': str(payment.order.event.name),
+    })
+    cache.set(PERIODIC_FAILURES_CACHE_KEY, failures, PERIODIC_FAILURES_CACHE_TTL)
+
+
+def _extract_invoice_id(payment):
+    if not payment.info:
+        return ''
+    try:
+        info = json.loads(payment.info)
+        return info.get('invoice_id', '')
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return ''
+
+
+@receiver(periodic_task, dispatch_uid="paykeeper_send_periodic_failure_summary")
+@minimum_interval(minutes_after_success=60)
+def send_periodic_failure_summary(sender, **kwargs):
+    failures = cache.get(PERIODIC_FAILURES_CACHE_KEY, [])
+    cache.delete(PERIODIC_FAILURES_CACHE_KEY)
+
+    if not failures:
+        return
+
+    from pretix.base.models import Event
+
+    admin_emails = set()
+    events = {}
+    for event_id in {f['event_id'] for f in failures}:
+        try:
+            event = Event.objects.get(pk=event_id)
+            events[event_id] = event
+            admins = event.get_users_with_permission('can_view_orders')
+            admin_emails.update(u.email for u in admins if u.email)
+        except Event.DoesNotExist:
+            continue
+
+    if not admin_emails:
+        return
+
+    lines = []
+    for f in failures:
+        lines.append('- {} (payment {}, invoice {}): {}'.format(
+            f['order'], f['payment_pk'], f['invoice_id'] or 'N/A', f['error'],
+        ))
+
+    first_event = events.get(failures[0]['event_id'])
+    if not first_event:
+        return
+
+    mail(
+        list(admin_emails),
+        'Paykeeper: {} periodic payment check(s) failed in the last hour'.format(len(failures)),
+        'pretix_paykeeper/email/periodic_check_failures.txt',
+        context={
+            'count': len(failures),
+            'failures': '\n'.join(lines),
+        },
+        event=first_event,
+        auto_email=True,
+    )

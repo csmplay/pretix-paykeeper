@@ -1,0 +1,5 @@
+{% blocktrans count counter=count %}One periodic payment status check failed in the last hour:{% plural %}{{ counter }} periodic payment status checks failed in the last hour:{% endblocktrans %}
+
+{{ failures }}
+
+{% blocktrans %}These payments are still pending. Please check the Paykeeper logs.{% endblocktrans %}
