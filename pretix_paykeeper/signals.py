@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from django.dispatch import receiver
 from django.utils.timezone import now
+from django_scopes import scopes_disabled
 from pretix.base.models import Order, OrderPayment
 from pretix.base.signals import periodic_task, register_payment_providers
 from pretix.base.services.mail import mail
@@ -117,3 +118,78 @@ def _send_failure_summary(failures):
         event=event,
         auto_email=True,
     )
+
+
+@receiver(periodic_task, dispatch_uid="paykeeper_check_pending_payments")
+@scopes_disabled()
+@minimum_interval(minutes_after_success=5, minutes_after_error=2)
+def check_pending_payments(sender, **kwargs):
+    from .payment import PaykeeperPaymentProvider
+
+    pending_payments = OrderPayment.objects.filter(
+        provider='paykeeper',
+        state=OrderPayment.PAYMENT_STATE_PENDING,
+    ).select_related('order', 'order__event')
+
+    for payment in pending_payments:
+        if not payment.info:
+            continue
+
+        try:
+            info = json.loads(payment.info)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+
+        invoice_id = info.get('invoice_id')
+        if not invoice_id:
+            continue
+
+        prov = PaykeeperPaymentProvider(payment.order.event)
+
+        try:
+            status_data = prov._check_invoice_status(invoice_id)
+        except Exception as e:
+            logger.error(
+                'Paykeeper periodic: failed to check invoice %s for order %s: %s',
+                invoice_id, payment.order.code, str(e),
+            )
+            continue
+
+        if isinstance(status_data, list) and len(status_data) > 0:
+            status = status_data[0].get('status', '')
+        elif isinstance(status_data, dict):
+            status = status_data.get('status', '')
+        else:
+            continue
+
+        if status == 'paid':
+            if payment.state == OrderPayment.PAYMENT_STATE_CONFIRMED:
+                continue
+            try:
+                payment.confirm()
+                logger.info(
+                    'Paykeeper periodic: payment %d confirmed for order %s',
+                    payment.pk, payment.order.code,
+                )
+            except Exception as e:
+                logger.error(
+                    'Paykeeper periodic: failed to confirm payment %d: %s',
+                    payment.pk, str(e),
+                )
+        elif status in ('expired', 'rejected'):
+            if payment.state in (
+                OrderPayment.PAYMENT_STATE_CONFIRMED,
+                OrderPayment.PAYMENT_STATE_FAILED,
+            ):
+                continue
+            try:
+                payment.fail(info={'error': {'status': status}})
+                logger.info(
+                    'Paykeeper periodic: payment %d marked as failed (%s) for order %s',
+                    payment.pk, status, payment.order.code,
+                )
+            except Exception as e:
+                logger.error(
+                    'Paykeeper periodic: failed to fail payment %d: %s',
+                    payment.pk, str(e),
+                )

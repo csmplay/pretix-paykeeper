@@ -2,6 +2,14 @@ from django.urls import re_path
 
 from . import views
 
+urlpatterns = [
+    re_path(
+        r'^_paykeeper/webhook/$',
+        views.PaykeeperWebhookView.as_view(),
+        name='webhook',
+    ),
+]
+
 event_patterns = [
     re_path(
         r'^paykeeper/callback/(?P<order>[^/]+)/(?P<secret>[^/]+)/$',
