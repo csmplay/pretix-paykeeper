@@ -213,6 +213,14 @@ class PaykeeperWebhookView(View):
             )
             return HttpResponse('OK')
 
+        webhook_payment_id = body.get('id')
+        if webhook_payment_id:
+            info = json.loads(payment.info) if payment.info else {}
+            if not info.get('payment_id'):
+                info['payment_id'] = str(webhook_payment_id)
+                payment.info = json.dumps(info)
+                payment.save(update_fields=['info'])
+
         _process_payment(payment.order, payment, callback_status)
         return HttpResponse('OK')
 
