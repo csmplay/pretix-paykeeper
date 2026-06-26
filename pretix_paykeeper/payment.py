@@ -573,7 +573,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
 
         return html
 
-    def payment_control_render_short(self, order, payment):
+    def payment_control_render_short(self, payment):
         return _('Paykeeper invoice')
 
     def order_pending_mail_render(self, order, **kwargs):
@@ -594,7 +594,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
     def calculate_fee(self, price):
         return Decimal('0.00')
 
-    def api_payment_details(self, order, payment):
+    def api_payment_details(self, payment):
         info = {}
         if payment.info:
             try:
