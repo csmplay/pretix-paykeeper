@@ -38,8 +38,28 @@ def _verify_webhook_key(body, event):
     return key == expected
 
 
-def _find_payment_global(identifier):
+def _find_payment_global(identifier, orderid=None):
     str_id = str(identifier)
+
+    if orderid:
+        parts = orderid.rsplit('-', 1)
+        if len(parts) == 2:
+            try:
+                payment_pk = int(parts[1])
+            except ValueError:
+                pass
+            else:
+                with scopes_disabled():
+                    try:
+                        p = OrderPayment.objects.select_related(
+                            'order', 'order__event'
+                        ).get(pk=payment_pk, provider='paykeeper')
+                        info = json.loads(p.info) if p.info else {}
+                        if str(info.get('invoice_id')) == str_id or str(info.get('payment_id')) == str_id:
+                            return p
+                    except (OrderPayment.DoesNotExist, ValueError):
+                        pass
+
     with scopes_disabled():
         candidates = OrderPayment.objects.filter(
             provider='paykeeper',
@@ -173,7 +193,7 @@ class PaykeeperWebhookView(View):
             logger.warning('Paykeeper webhook: missing identifier')
             return HttpResponse('OK')
 
-        payment = _find_payment_global(identifier)
+        payment = _find_payment_global(identifier, orderid=body.get('orderid'))
 
         if not payment:
             logger.warning('Paykeeper webhook: payment not found for identifier %s', identifier)
