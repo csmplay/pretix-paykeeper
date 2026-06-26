@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import requests as http_requests
 from django import forms
+from django.core.cache import cache
 from django.utils.translation import gettext_lazy as _
 from pretix.base.models import OrderPayment
 from pretix.base.payment import BasePaymentProvider, PaymentException
@@ -385,6 +386,14 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             contact = order.email or ''
 
         receipt_key = f'{order.code}-final-{payment.pk}'
+        lock_key = f'pretix_paykeeper_receipt_lock_{receipt_key}'
+
+        if not cache.add(lock_key, 'creating', timeout=300):
+            logger.warning(
+                'Paykeeper: final receipt for %s already being created, skipping',
+                order.code,
+            )
+            return False
 
         data = {
             'payment_id': str(payment_id),
@@ -411,6 +420,8 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         except PaymentException as e:
             logger.error('Paykeeper: failed to create final receipt for %s: %s', order.code, str(e))
             return False
+        finally:
+            cache.delete(lock_key)
 
     def payment_form_fields(self):
         return OrderedDict()
