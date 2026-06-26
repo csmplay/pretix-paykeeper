@@ -26,6 +26,7 @@ def register_payment_provider(sender, **kwargs):
 
 @receiver(periodic_task, dispatch_uid="paykeeper_final_receipts")
 @minimum_interval(minutes_after_success=30)
+@scopes_disabled()
 def issue_final_receipts(sender, **kwargs):
     from .payment import PaykeeperPaymentProvider
 
