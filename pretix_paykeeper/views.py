@@ -10,7 +10,6 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django_scopes import scopes_disabled
 from pretix.base.models import Order, OrderPayment
-from pretix.control.permissions import EventPermissionRequiredMixin
 from pretix.multidomain.urlreverse import build_absolute_uri
 
 from .payment import PaykeeperPaymentProvider
@@ -226,14 +225,7 @@ class PaykeeperWebhookView(View):
 
 
 @method_decorator(csrf_exempt, name='dispatch')
-class ManualFinalReceiptView(EventPermissionRequiredMixin, View):
-    permission = 'can_view_orders'
-
-    @classmethod
-    def as_view(cls, **initkwargs):
-        view = super().as_view(**initkwargs)
-        return csrf_exempt(view)
-
+class ManualFinalReceiptView(View):
     def post(self, request, *args, **kwargs):
         order_code = kwargs.get('order')
         payment_pk = kwargs.get('payment_pk')
