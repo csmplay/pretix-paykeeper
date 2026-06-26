@@ -30,7 +30,6 @@ def register_payment_provider(sender, **kwargs):
 def issue_final_receipts(sender, **kwargs):
     from .payment import PaykeeperPaymentProvider
 
-    today = now().date()
     failures = []
 
     orders = Order.objects.filter(
@@ -43,7 +42,8 @@ def issue_final_receipts(sender, **kwargs):
     for order in orders:
         event_tz = ZoneInfo(order.event.settings.timezone)
         event_date = order.event.date_from.astimezone(event_tz).date()
-        if event_date != today:
+        today_event_tz = now().astimezone(event_tz).date()
+        if event_date != today_event_tz:
             continue
 
         if not order.event.settings.get('payment_paykeeper_final_receipt_enabled', as_type=bool):
