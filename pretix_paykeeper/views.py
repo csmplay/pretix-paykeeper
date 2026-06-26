@@ -1,6 +1,8 @@
 import hashlib
+import hmac
 import json
 import logging
+from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs
 
 from django.http import HttpResponse, HttpResponseBadRequest
@@ -34,7 +36,7 @@ def _verify_webhook_key(body, event):
     params = id_val + sum_val + clientid + orderid
     expected = hashlib.md5((params + secret_word).encode('utf-8')).hexdigest()
 
-    return key == expected
+    return hmac.compare_digest(key, expected)
 
 
 def _find_payment_global(identifier, orderid=None):
@@ -190,11 +192,18 @@ class PaykeeperWebhookView(View):
             return HttpResponse('OK')
 
         webhook_sum = body.get('sum', '')
-        expected_sum = '{:.2f}'.format(payment.amount)
-        if webhook_sum != expected_sum:
+        try:
+            webhook_amount = Decimal(webhook_sum)
+        except InvalidOperation:
+            logger.warning(
+                'Paykeeper webhook: invalid sum for payment %d: %s',
+                payment.pk, webhook_sum,
+            )
+            return HttpResponse('OK')
+        if webhook_amount != payment.amount:
             logger.warning(
                 'Paykeeper webhook: sum mismatch for payment %d: got %s, expected %s',
-                payment.pk, webhook_sum, expected_sum,
+                payment.pk, webhook_sum, payment.amount,
             )
             return HttpResponse('OK')
 
@@ -284,6 +293,47 @@ class ManualFinalReceiptView(View):
                 order.code, payment.pk, error_msg,
             )
             return HttpResponseBadRequest(f'Error: {error_msg}')
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponseBadRequest('Method not allowed')
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class ManualPaymentIdView(View):
+    def post(self, request, *args, **kwargs):
+        order_code = kwargs.get('order')
+        payment_pk = kwargs.get('payment_pk')
+
+        try:
+            order = Order.objects.get(
+                code=order_code,
+                event=request.event,
+            )
+        except Order.DoesNotExist:
+            return HttpResponseBadRequest('Order not found')
+
+        try:
+            payment = order.payments.get(
+                pk=payment_pk,
+                provider='paykeeper',
+            )
+        except OrderPayment.DoesNotExist:
+            return HttpResponseBadRequest('Payment not found')
+
+        payment_id = request.POST.get('payment_id', '').strip()
+        if not payment_id:
+            return HttpResponseBadRequest('payment_id is required')
+
+        info = json.loads(payment.info) if payment.info else {}
+        info['payment_id'] = payment_id
+        payment.info = json.dumps(info)
+        payment.save(update_fields=['info'])
+
+        logger.info(
+            'Paykeeper: manual payment_id set to %s for order %s (payment %d)',
+            payment_id, order.code, payment.pk,
+        )
+        return HttpResponse('payment_id saved')
 
     def get(self, request, *args, **kwargs):
         return HttpResponseBadRequest('Method not allowed')

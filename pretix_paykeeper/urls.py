@@ -21,4 +21,9 @@ event_patterns = [
         views.ManualFinalReceiptView.as_view(),
         name='manual-final-receipt',
     ),
+    re_path(
+        r'^paykeeper/manual-payment-id/(?P<order>[^/]+)/(?P<payment_pk>\d+)/$',
+        views.ManualPaymentIdView.as_view(),
+        name='manual-payment-id',
+    ),
 ]

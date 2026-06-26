@@ -141,6 +141,9 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         except http_requests.exceptions.ConnectionError:
             logger.error('Paykeeper: connection error for token endpoint %s', url)
             raise PaymentException(_('Could not connect to Paykeeper server.'))
+        except http_requests.exceptions.Timeout:
+            logger.error('Paykeeper: timeout for token endpoint %s', url)
+            raise PaymentException(_('Paykeeper server timed out.'))
         except http_requests.exceptions.HTTPError as e:
             logger.error('Paykeeper: token error %s', e.response.status_code)
             raise PaymentException(_('Paykeeper authentication failed. Check username and password.'))
@@ -225,8 +228,6 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             return '7'
         if rate == Decimal('10'):
             return '10'
-        if rate == Decimal('18'):
-            return '18'
         if rate == Decimal('20'):
             return '20'
         return None
@@ -379,6 +380,10 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         payment_id = info.get('payment_id')
         if not payment_id:
             payment_id = self._get_payment_id(invoice_id)
+            if payment_id:
+                info['payment_id'] = str(payment_id)
+                payment.info = json.dumps(info)
+                payment.save(update_fields=['info'])
         if not payment_id:
             logger.error('Paykeeper: no payment_id for invoice %s, cannot create final receipt', invoice_id)
             return False
@@ -531,12 +536,14 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
     def payment_control_render(self, request, payment):
         invoice_id = None
         invoice_url = None
+        payment_id = None
         final_receipt_sent = False
         if payment.info:
             try:
                 info = json.loads(payment.info)
                 invoice_id = info.get('invoice_id')
                 invoice_url = info.get('invoice_url')
+                payment_id = info.get('payment_id')
                 final_receipt_sent = info.get('final_receipt_sent', False)
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
@@ -545,13 +552,33 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             '<dl>'
             '<dt>{label_id}</dt><dd>{val_id}</dd>'
             '<dt>{label_url}</dt><dd><a href="{val_url}" target="_blank">{val_url}</a></dd>'
+            '<dt>{label_pid}</dt><dd>{val_pid}</dd>'
             '</dl>'
         ).format(
             label_id=_('Invoice ID'),
             val_id=invoice_id or _('N/A'),
             label_url=_('Invoice URL'),
             val_url=invoice_url or _('N/A'),
+            label_pid=_('Payment ID'),
+            val_pid=payment_id or _('N/A'),
         )
+
+        if not payment_id:
+            set_pid_url = build_absolute_uri(
+                payment.order.event,
+                'plugins:pretix_paykeeper:manual-payment-id',
+                kwargs={'order': payment.order.code, 'payment_pk': payment.pk},
+            )
+            html += (
+                '<form method="post" action="{url}" style="margin-top: 10px; display: flex; gap: 5px; align-items: center;">'
+                '<input type="text" name="payment_id" placeholder="{placeholder}" class="form-control" style="width: 200px;" />'
+                '<button type="submit" class="btn btn-warning btn-sm">{label}</button>'
+                '</form>'
+            ).format(
+                url=set_pid_url,
+                placeholder=_('payment_id'),
+                label=_('Set payment_id'),
+            )
 
         if self.settings.get('final_receipt_enabled', as_type=bool):
             if final_receipt_sent:
@@ -604,6 +631,10 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         payment_id = info.get('payment_id')
         if not payment_id:
             payment_id = self._get_payment_id(invoice_id)
+            if payment_id:
+                info['payment_id'] = str(payment_id)
+                payment.info = json.dumps(info)
+                payment.save(update_fields=['info'])
         if not payment_id:
             raise PaymentException(_('No payment_id for invoice %s, cannot create refund receipt.') % invoice_id)
 
