@@ -217,6 +217,7 @@ class PaykeeperWebhookView(View):
         return HttpResponse('OK')
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ManualFinalReceiptView(EventPermissionRequiredMixin, View):
     permission = 'can_view_orders'
 
