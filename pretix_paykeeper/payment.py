@@ -324,7 +324,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             logger.error('Paykeeper: failed to get payment_id for invoice %s: %s', invoice_id, str(e))
         return None
 
-    def _build_final_receipt_cart(self, order):
+    def _build_final_receipt_cart(self, order, payment):
         cart_items = []
         for pos in order.positions.all():
             item_name = str(pos.item.name)
@@ -349,7 +349,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             })
 
         if not cart_items:
-            total_amount = float(order.total)
+            total_amount = float(payment.amount)
             cart_items.append({
                 'name': self._get_service_name(),
                 'payment_type': 'full',
@@ -376,7 +376,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             return False
 
         token = self._get_token()
-        cart = self._build_final_receipt_cart(order)
+        cart = self._build_final_receipt_cart(order, payment)
 
         contact = ''
         if order.invoice_address:
