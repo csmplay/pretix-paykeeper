@@ -128,6 +128,8 @@ class PaykeeperCallbackView(View):
 @method_decorator(csrf_exempt, name='dispatch')
 class PaykeeperWebhookView(View):
     def post(self, request, *args, **kwargs):
+        logger.warning('Paykeeper webhook raw body: %s', request.body.decode(errors='replace'))
+
         try:
             body = json.loads(request.body)
         except (json.JSONDecodeError, ValueError):
@@ -136,6 +138,11 @@ class PaykeeperWebhookView(View):
 
         identifier = body.get('id') or body.get('invoice_id') or body.get('payment_id')
         callback_status = body.get('status')
+
+        logger.warning(
+            'Paykeeper webhook: identifier=%s status=%s body=%s',
+            identifier, callback_status, body,
+        )
 
         if not identifier:
             logger.warning('Paykeeper webhook: missing identifier')
