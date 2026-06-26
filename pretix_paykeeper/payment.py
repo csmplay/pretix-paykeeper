@@ -365,11 +365,7 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         token = self._get_token()
         cart = self._build_cart(order, payment, payment_type='full', match_amount=True)
 
-        contact = ''
-        if order.invoice_address:
-            contact = self._get_name_for_invoice(order.invoice_address)
-        if not contact:
-            contact = order.email or ''
+        contact = order.email or ''
 
         receipt_key = f'{order.code}-final-{payment.pk}'
         lock_key = f'pretix_paykeeper_receipt_lock_{receipt_key}'
