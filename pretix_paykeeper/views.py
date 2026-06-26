@@ -3,7 +3,6 @@ import json
 import logging
 from urllib.parse import parse_qs
 
-from django.db.models import Q
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import redirect
 from django.utils.decorators import method_decorator
@@ -44,11 +43,21 @@ def _find_payment_global(identifier):
     with scopes_disabled():
         candidates = OrderPayment.objects.filter(
             provider='paykeeper',
-        ).filter(
-            Q(info__payment_id=str_id) | Q(info__invoice_id=str_id)
+            info__contains=str_id,
         ).select_related('order', 'order__event').order_by('-pk')
 
-        return candidates.first()
+        for p in candidates:
+            if not p.info:
+                continue
+            try:
+                info = json.loads(p.info)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+            if str(info.get('invoice_id')) == str_id:
+                return p
+            if str(info.get('payment_id')) == str_id:
+                return p
+        return None
 
 
 def _extract_status(api_response):
