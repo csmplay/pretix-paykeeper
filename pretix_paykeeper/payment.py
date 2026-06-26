@@ -557,21 +557,17 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
             if final_receipt_sent:
                 html += '<p><strong>{}</strong></p>'.format(_('Final receipt sent'))
             else:
-                from django.middleware.csrf import get_token
                 button_url = build_absolute_uri(
                     payment.order.event,
                     'plugins:pretix_paykeeper:manual-final-receipt',
                     kwargs={'order': payment.order.code, 'payment_pk': payment.pk},
                 )
-                csrf = get_token(request)
                 html += (
                     '<form method="post" action="{url}" style="margin-top: 10px;">'
-                    '<input type="hidden" name="csrfmiddlewaretoken" value="{csrf}">'
                     '<button type="submit" class="btn btn-primary btn-sm">{label}</button>'
                     '</form>'
                 ).format(
                     url=button_url,
-                    csrf=csrf,
                     label=_('Send final receipt now'),
                 )
 
