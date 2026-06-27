@@ -337,9 +337,9 @@ class PaykeeperPaymentProvider(BasePaymentProvider):
         try:
             status_data = self._check_invoice_status(invoice_id)
             if isinstance(status_data, list) and len(status_data) > 0:
-                return status_data[0].get('payment_id')
+                return status_data[0].get('paymentid')
             elif isinstance(status_data, dict):
-                return status_data.get('payment_id')
+                return status_data.get('paymentid')
         except Exception as e:
             logger.error('Paykeeper: failed to get payment_id for invoice %s: %s', invoice_id, str(e))
         return None
